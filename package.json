@@ -1,0 +1,31 @@
+{
+  "name": "marketing-event-backend",
+  "version": "0.0.1",
+  "description": "Marketing Event Backend",
+  "main": "index.js",
+  "scripts": {
+    "test": "node index.js",
+    "start": "nodemon index.js"
+  },
+  "keywords": [
+    "Nodejs",
+    "Backend",
+    "using",
+    "fastify"
+  ],
+  "author": "Utkarsh Nigam",
+  "license": "MIT",
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "crypto": "^1.0.1",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "fs": "^0.0.1-security",
+    "handlebars": "^4.7.8",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.10.0",
+    "nodemailer": "^6.10.0",
+    "nodemon": "^3.1.9",
+    "path": "^0.12.7"
+  }
+}
