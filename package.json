@@ -16,6 +16,7 @@
   "author": "Utkarsh Nigam",
   "license": "MIT",
   "dependencies": {
+    "@fastify/cors": "^10.0.2",
     "bcrypt": "^5.1.1",
     "crypto": "^1.0.1",
     "dotenv": "^16.4.7",

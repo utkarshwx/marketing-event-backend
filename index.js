@@ -18,9 +18,17 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
 
-fastify.register(require('fastify-cors'), {
+fastify.register(require('@fastify/cors'), {
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Accept',
+    'Content-Type',
+    'Authorization'
+  ],
+  preflight: true
 });
 
 // Authentication & Registration Routes
