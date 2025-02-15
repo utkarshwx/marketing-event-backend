@@ -18,6 +18,11 @@ mongoose.connect(process.env.MONGODB_URI)
   .then(() => console.log('Connected to MongoDB'))
   .catch(err => console.error('MongoDB connection error:', err));
 
+fastify.register(require('fastify-cors'), {
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE']
+});
+
 // Authentication & Registration Routes
 const userRoutes = async (fastify) => {
   // Register user
@@ -273,7 +278,7 @@ const adminRoutes = async (fastify) => {
   fastify.post('/create-event', async (request, reply) => {
     try {
       const { eventName, description, eventDate, capacity } = request.body;
-      const { adminId } = request.user;
+      // const { adminId } = request.user;
 
       const eventDateTime = new Date(eventDate);
       if (eventDateTime < new Date()) {
@@ -288,11 +293,8 @@ const adminRoutes = async (fastify) => {
         eventName,
         description,
         eventDate: eventDateTime,
-        capacity,
-        createdBy: adminId
+        capacity
       });
-
-      event.eventId = await generateId('EVT');
 
       await event.save();
 

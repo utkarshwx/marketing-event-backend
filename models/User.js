@@ -33,13 +33,12 @@ const userSchema = new Schema({
     timestamps: true // Adds createdAt and updatedAt
 });
 
-userSchema.index({ email: 1, userId: 1 });
+userSchema.index({ email: 1, userId: 1 }); 
 
 userSchema.pre('save', async function (next) { 
     try {
         if (!this.userId) {
             this.userId = await generateId('USR'); 
-            console.log("Generated userId:", this.userId);
         }
         next();
     } catch (error) {
