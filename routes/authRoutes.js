@@ -1,15 +1,18 @@
+// routes/auth.js
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const OTPVerification = require('../models/Otp');
-const config = require('../config');
+const config = require('../config/config');
 const { sendOtpMail, sendloginMail } = require('../utils/mailer');
+const rateLimiters = require('../middleware/rateLimiter');
 
 async function authRoutes(fastify) {
-    // Register user
+    // Register user - limit to prevent spam account creation
     fastify.route({
         method: 'POST',
         url: '/register',
+        preHandler: rateLimiters.registration,
         handler: async (request, reply) => {
             try {
                 const { name, email, phoneno, password } = request.body;
@@ -56,10 +59,11 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Verify email
+    // Verify email - limit to prevent OTP brute force
     fastify.route({
         method: 'POST',
         url: '/verify-email',
+        preHandler: rateLimiters.otpVerification,
         handler: async (request, reply) => {
             try {
                 const { userId, otp } = request.body;
@@ -92,10 +96,11 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Login
+    // Login - strict rate limiting to prevent brute force
     fastify.route({
         method: 'POST',
         url: '/login',
+        preHandler: rateLimiters.loginStrict,
         handler: async (request, reply) => {
             try {
                 const { email, password } = request.body;
@@ -107,6 +112,13 @@ async function authRoutes(fastify) {
 
                 const isValidPassword = await bcrypt.compare(password, user.password);
                 if (!isValidPassword) {
+                    // Log failed login attempt
+                    request.log.info({
+                        action: 'failed_login',
+                        email,
+                        ip: request.ip,
+                        userAgent: request.headers['user-agent']
+                    });
                     return reply.code(401).send({ error: 'Invalid credentials' });
                 }
 
@@ -127,6 +139,14 @@ async function authRoutes(fastify) {
                 if (user.role === 'user') {
                     await sendloginMail(user.email, user.name);
                 }
+
+                // Log successful login
+                request.log.info({
+                    action: 'successful_login',
+                    userId: user.userId,
+                    role: user.role,
+                    ip: request.ip
+                });
 
                 // Prepare response based on role
                 const response = {
@@ -153,10 +173,11 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Resend OTP
+    // Resend OTP - limit to prevent abuse
     fastify.route({
         method: 'POST',
         url: '/resend-otp',
+        preHandler: rateLimiters.otpVerification,
         handler: async (request, reply) => {
             try {
                 const { userId } = request.body;
@@ -189,17 +210,23 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Forgot Password
+    // Forgot Password - limit to prevent account enumeration abuse
     fastify.route({
         method: 'POST',
         url: '/forgot-password',
+        preHandler: rateLimiters.accountRecovery,
         handler: async (request, reply) => {
             try {
                 const { email } = request.body;
 
                 const user = await User.findOne({ email });
                 if (!user) {
-                    return reply.code(404).send({ error: 'User not found' });
+                    // Return same response to prevent user enumeration
+                    // But add delay to prevent timing attacks
+                    await new Promise(resolve => setTimeout(resolve, 500 + Math.random() * 500));
+                    return reply.send({ 
+                        message: 'If your email is registered, you will receive a password reset OTP'
+                    });
                 }
 
                 // Generate OTP for password reset
@@ -213,8 +240,15 @@ async function authRoutes(fastify) {
                 await otpVerification.save();
                 await sendOtpMail(user.email, otp, user.name);
 
+                // Log password reset request
+                request.log.info({
+                    action: 'password_reset_requested',
+                    userId: user.userId,
+                    ip: request.ip
+                });
+
                 reply.send({ 
-                    message: 'Password reset OTP sent successfully',
+                    message: 'If your email is registered, you will receive a password reset OTP',
                     userId: user.userId
                 });
             } catch (error) {
@@ -224,10 +258,11 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Reset Password
+    // Reset Password - limit to prevent brute force
     fastify.route({
         method: 'POST',
         url: '/reset-password',
+        preHandler: rateLimiters.otpVerification,
         handler: async (request, reply) => {
             try {
                 const { userId, otp, newPassword } = request.body;
@@ -255,6 +290,13 @@ async function authRoutes(fastify) {
                 // Mark OTP as verified
                 verification.isVerified = true;
                 await verification.save();
+
+                // Log successful password reset
+                request.log.info({
+                    action: 'password_reset_completed',
+                    userId,
+                    ip: request.ip
+                });
 
                 reply.send({ message: 'Password reset successful' });
             } catch (error) {

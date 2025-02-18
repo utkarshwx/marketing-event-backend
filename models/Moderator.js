@@ -94,8 +94,6 @@ const moderatorSchema = new Schema({
 });
 
 // Indexes for better query performance
-moderatorSchema.index({ userId: 1 });
-moderatorSchema.index({ 'deviceInfo.deviceId': 1 });
 moderatorSchema.index({ 'scanHistory.timestamp': 1 });
 moderatorSchema.index({ activeStatus: 1 });
 

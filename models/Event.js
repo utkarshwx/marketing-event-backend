@@ -68,7 +68,6 @@ const eventSchema = new Schema({
     timestamps: true
 });
 
-eventSchema.index({ eventId: 1 });
 eventSchema.index({ eventStatus: 1, isActive: 1 });
 
 eventSchema.pre('save', async function(next) {

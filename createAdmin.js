@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcrypt');
 const User = require('./models/User');
 const Admin = require('./models/Admin');
-const config = require('./config');
+const config = require('./config/config');
 
 async function createAdmin() {
     try {

@@ -2,7 +2,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const Admin = require('../models/Admin');
 const Moderator = require('../models/Moderator');
-const config = require('../config');
+const config = require('../config/config');
 
 // Base authentication middleware
 const authenticate = (requiredRole) => {

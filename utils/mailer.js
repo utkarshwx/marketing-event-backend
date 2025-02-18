@@ -2,7 +2,7 @@ const nodemailer = require('nodemailer');
 const { readFileSync } = require('fs');
 const { resolve } = require('path');
 const { compile } = require('handlebars');
-const config = require('../config/index.js');
+const config = require('../config/config.js');
 
 const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SENDER_NAME } = config;
 

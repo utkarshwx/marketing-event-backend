@@ -1,3 +1,4 @@
+// index.js
 const fastify = require('fastify')({ 
   logger: {
       level: 'info',
@@ -17,22 +18,22 @@ const fastify = require('fastify')({
 });
 const mongoose = require('mongoose');
 const path = require('path');
-const config = require('./config');
+const config = require('./config/config');
 
 // Import routes
-const authRoutes = require('./routes/auth');
-const userRoutes = require('./routes/user');
-const moderatorRoutes = require('./routes/moderator');
-const adminRoutes = require('./routes/admin');
+const authRoutes = require('./routes/authRoutes');
+const userRoutes = require('./routes/userRoutes');
+const moderatorRoutes = require('./routes/moderatorRoutes');
+const adminRoutes = require('./routes/adminRoutes');
 
 // Import middleware
 const {
   authenticateUser,
   authenticateAdmin,
   authenticateModerator,
-  checkPayment,
-  rateLimit
+  checkPayment
 } = require('./middleware/auth');
+const rateLimiters = require('./middleware/rateLimiter');
 
 // Register Fastify plugins
 fastify.register(require('@fastify/cors'), {
@@ -51,10 +52,7 @@ fastify.register(require('@fastify/cors'), {
 });
 
 // Global rate limiting
-const globalRateLimit = rateLimit(1000, 60 * 60 * 1000); // 1000 requests per hour
-
-// Add global hooks
-fastify.addHook('onRequest', globalRateLimit);
+fastify.addHook('onRequest', rateLimiters.global);
 
 // Add error handler
 fastify.setErrorHandler(function (error, request, reply) {
@@ -96,8 +94,6 @@ fastify.setErrorHandler(function (error, request, reply) {
 // Connect to MongoDB
 // MongoDB Connection Options
 const mongoOptions = {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
   retryWrites: true,
   w: 'majority',
   serverSelectionTimeoutMS: 5000,
@@ -185,15 +181,29 @@ fastify.register(adminRoutes, {
   preHandler: authenticateAdmin
 });
 
-// Handle payment webhook (public route)
-fastify.post('/api/payments/webhook', async (request, reply) => {
+// Handle payment webhook (public route but rate limited)
+fastify.post('/api/payments/webhook', {
+  preHandler: rateLimiters.custom(100, 60 * 1000) // 100 requests per minute for webhook
+}, async (request, reply) => {
   try {
+      // Validate webhook signature if using a payment gateway that supports it
+      // This adds another layer of security beyond rate limiting
+      
       const { paymentId, status, transactionId, gatewayResponse } = request.body;
 
       const payment = await Payment.findOne({ paymentId });
       if (!payment) {
           return reply.code(404).send({ error: 'Payment not found' });
       }
+
+      // Log payment update from webhook
+      request.log.info({
+          action: 'payment_webhook_received',
+          paymentId,
+          status,
+          transactionId,
+          ip: request.ip
+      });
 
       payment.status = status;
       payment.transactionId = transactionId;
@@ -209,6 +219,14 @@ fastify.post('/api/payments/webhook', async (request, reply) => {
 
           // Generate QR code
           await user.generateQRCode();
+          
+          // Log successful payment
+          request.log.info({
+              action: 'payment_successful',
+              paymentId,
+              userId: payment.userId,
+              amount: payment.amount
+          });
       }
 
       reply.send({ message: 'Payment status updated' });
@@ -261,8 +279,8 @@ const start = async () => {
           environment: config.NODE_ENV,
           port: config.PORT,
           mongoDbConnected: mongoose.connection.readyState === 1,
-          rateLimitWindow: '1 hour',
-          maxRequestsPerWindow: 1000
+          rateLimitWindow: `${config.RATE_LIMIT_WINDOW_MS/60000} minutes`,
+          maxRequestsPerWindow: config.RATE_LIMIT_MAX_REQUESTS
       }, 'Server configuration');
 
       await fastify.listen({ 

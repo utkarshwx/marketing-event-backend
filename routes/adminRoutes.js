@@ -3,23 +3,46 @@ const Admin = require('../models/Admin');
 const Event = require('../models/Event');
 const Payment = require('../models/Payment');
 const Moderator = require('../models/Moderator');
-const { authenticateAdmin, checkAdminPermission } = require('../middleware/auth');
+const { 
+    authenticateAdmin, 
+    checkAdminPermission 
+} = require('../middleware/auth');
 const bcrypt = require('bcrypt');
-const config = require('../config');
+const config = require('../config/config');
+const rateLimiters = require('../middleware/rateLimiter');
+const jwt = require('jsonwebtoken');
 
 async function adminRoutes(fastify) {
     // Admin Login
-    fastify.post('/login', async (request, reply) => {
+    fastify.post('/login', {
+        preHandler: rateLimiters.loginStrict
+    }, async (request, reply) => {
         try {
             const { username, password } = request.body;
 
             const admin = await Admin.findOne({ username });
             if (!admin) {
+                // Log failed admin login attempt
+                request.log.warn({
+                    action: 'failed_admin_login',
+                    username,
+                    ip: request.ip,
+                    userAgent: request.headers['user-agent']
+                });
+                
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
             const isValidPassword = await bcrypt.compare(password, admin.password);
             if (!isValidPassword) {
+                // Log failed admin login attempt
+                request.log.warn({
+                    action: 'failed_admin_login_invalid_password',
+                    username,
+                    ip: request.ip,
+                    userAgent: request.headers['user-agent']
+                });
+                
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
@@ -32,7 +55,18 @@ async function adminRoutes(fastify) {
             // Update last login and log activity
             admin.lastLogin = new Date();
             await admin.save();
-            await admin.logActivity('login', { timestamp: new Date() });
+            await admin.logActivity('login', { 
+                timestamp: new Date(),
+                ip: request.ip,
+                userAgent: request.headers['user-agent']
+            });
+
+            // Log successful admin login
+            request.log.info({
+                action: 'successful_admin_login',
+                adminId: admin.adminId,
+                ip: request.ip
+            });
 
             reply.send({ 
                 token,
@@ -49,8 +83,12 @@ async function adminRoutes(fastify) {
         }
     });
 
-    // Dashboard Overview
-    fastify.get('/dashboard', { preHandler: authenticateAdmin }, async (request, reply) => {
+    fastify.get('/dashboard', { 
+        preHandler: [
+            authenticateAdmin,
+            rateLimiters.custom(30, 60 * 1000) // 30 requests per minute
+        ]
+    }, async (request, reply) => {
         try {
             // Get various statistics
             const stats = {
@@ -98,7 +136,11 @@ async function adminRoutes(fastify) {
     // Event Management
     // Create Event
     fastify.post('/events', { 
-        preHandler: [authenticateAdmin, checkAdminPermission('canCreateEvents')] 
+        preHandler: [
+            authenticateAdmin, 
+            checkAdminPermission('canCreateEvents'),
+            rateLimiters.adminOperations
+        ]
     }, async (request, reply) => {
         try {
             const { eventName, description, eventDate, capacity, location, registrationDeadline } = request.body;
@@ -262,7 +304,11 @@ async function adminRoutes(fastify) {
     // Moderator Management
     // Create Moderator
     fastify.post('/moderators', {
-        preHandler: [authenticateAdmin, checkAdminPermission('canManageModerators')]
+        preHandler: [
+            authenticateAdmin, 
+            checkAdminPermission('canManageModerators'),
+            rateLimiters.adminOperations
+        ]
     }, async (request, reply) => {
         try {
             const { name, email, phoneNumber, password } = request.body;
@@ -315,6 +361,7 @@ async function adminRoutes(fastify) {
             reply.code(500).send({ error: 'Internal server error' });
         }
     });
+
 
     // Get Moderator Statistics
     fastify.get('/moderators/stats', { preHandler: authenticateAdmin }, async (request, reply) => {
