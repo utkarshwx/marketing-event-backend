@@ -12,7 +12,7 @@ async function authRoutes(fastify) {
         url: '/register',
         handler: async (request, reply) => {
             try {
-                const { name, email, phoneNumber, password } = request.body;
+                const { name, email, phoneno, password } = request.body;
 
                 // Check if user exists
                 const existingUser = await User.findOne({ email });
@@ -27,7 +27,7 @@ async function authRoutes(fastify) {
                 const user = new User({
                     name,
                     email,
-                    phoneNumber,
+                    phoneNumber: phoneno,
                     password: hashedPassword,
                     role: 'user'
                 });
