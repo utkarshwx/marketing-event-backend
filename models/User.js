@@ -19,7 +19,17 @@ const userSchema = new Schema({
     phoneNumber: {
         type: String,
         required: true,
-        unique: true
+        unique: function() {
+            // Only enforce uniqueness for non-admin accounts
+            return this.role !== 'admin';
+        },
+        validate: {
+            validator: function(v) {
+                // Basic phone validation - can be customized
+                return /^\d{10,15}$/.test(v);
+            },
+            message: props => `${props.value} is not a valid phone number!`
+        }
     },
     password: {
         type: String,
@@ -61,7 +71,19 @@ const userSchema = new Schema({
     hasValidPayment: {
         type: Boolean,
         default: false
-    }
+    },
+    lastLogin: {
+        type: Date,
+        default: null
+    },
+    loginHistory: [{
+        ip: String,
+        userAgent: String,
+        timestamp: {
+            type: Date,
+            default: Date.now
+        }
+    }]
 }, {
     timestamps: true
 });
@@ -106,6 +128,23 @@ userSchema.methods.useQRCode = async function(moderatorId) {
     await this.save();
     
     return true;
+};
+
+// Add method to record login
+userSchema.methods.recordLogin = async function(ipAddress, userAgent) {
+    this.lastLogin = new Date();
+    this.loginHistory.push({
+        ip: ipAddress,
+        userAgent: userAgent,
+        timestamp: new Date()
+    });
+    
+    // Keep only last 10 logins
+    if (this.loginHistory.length > 10) {
+        this.loginHistory = this.loginHistory.slice(-10);
+    }
+    
+    await this.save();
 };
 
 module.exports = mongoose.model('User', userSchema);

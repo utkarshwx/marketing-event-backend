@@ -14,14 +14,20 @@ const jwt = require('jsonwebtoken');
 
 async function adminRoutes(fastify) {
     // Admin Login
+    // Admin Login
     fastify.post('/login', {
         preHandler: rateLimiters.loginStrict
     }, async (request, reply) => {
         try {
             const { username, password } = request.body;
 
-            const admin = await Admin.findOne({ username });
-            if (!admin) {
+            // First find the user with admin role
+            const adminUser = await User.findOne({ 
+                email: username,
+                role: 'admin'
+            });
+            
+            if (!adminUser) {
                 // Log failed admin login attempt
                 request.log.warn({
                     action: 'failed_admin_login',
@@ -33,7 +39,8 @@ async function adminRoutes(fastify) {
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
-            const isValidPassword = await bcrypt.compare(password, admin.password);
+            // Verify password
+            const isValidPassword = await bcrypt.compare(password, adminUser.password);
             if (!isValidPassword) {
                 // Log failed admin login attempt
                 request.log.warn({
@@ -46,8 +53,20 @@ async function adminRoutes(fastify) {
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
+            // Now find the admin profile
+            const admin = await Admin.findOne({ userId: adminUser.userId });
+            if (!admin) {
+                request.log.error({
+                    action: 'admin_profile_missing',
+                    userId: adminUser.userId,
+                    ip: request.ip
+                });
+                
+                return reply.code(500).send({ error: 'Admin profile not found' });
+            }
+
             const token = jwt.sign(
-                { adminId: admin.adminId, role: admin.role },
+                { userId: adminUser.userId, adminId: adminUser.userId, role: adminUser.role },
                 config.JWT_SECRET,
                 { expiresIn: config.JWT_EXPIRES_IN }
             );
@@ -64,16 +83,16 @@ async function adminRoutes(fastify) {
             // Log successful admin login
             request.log.info({
                 action: 'successful_admin_login',
-                adminId: admin.adminId,
+                userId: adminUser.userId,
                 ip: request.ip
             });
 
             reply.send({ 
                 token,
                 admin: {
-                    adminId: admin.adminId,
-                    username: admin.username,
-                    role: admin.role,
+                    userId: adminUser.userId,
+                    email: adminUser.email,
+                    role: adminUser.role,
                     permissions: admin.permissions
                 }
             });
@@ -312,7 +331,7 @@ async function adminRoutes(fastify) {
     }, async (request, reply) => {
         try {
             const { name, email, phoneNumber, password } = request.body;
-            const { adminId } = request.user;
+            const { userId } = request.user;  // Get userId from the JWT token
 
             // Check if email exists
             const existingUser = await User.findOne({ email });
@@ -336,13 +355,14 @@ async function adminRoutes(fastify) {
             // Create moderator profile
             const moderator = new Moderator({
                 userId: user.userId,
-                activeStatus: 'active'
+                activeStatus: 'active',
+                createdBy: userId  // Add the createdBy field
             });
 
             await moderator.save();
 
             // Log activity
-            const admin = await Admin.findOne({ userId: adminId });
+            const admin = await Admin.findOne({ userId });
             await admin.logActivity('create_moderator', { 
                 moderatorId: user.userId,
                 moderatorName: name 
@@ -366,17 +386,37 @@ async function adminRoutes(fastify) {
     // Get Moderator Statistics
     fastify.get('/moderators/stats', { preHandler: authenticateAdmin }, async (request, reply) => {
         try {
+            // Use lean() for better performance, and DON'T try to populate with ObjectId
             const moderators = await Moderator.find()
-                .populate('userId', 'name email')
                 .lean();
-
-            const moderatorStats = moderators.map(moderator => ({
-                ...moderator,
-                dailyAverage: moderator.totalScans / 
-                    Math.max(1, Math.ceil((Date.now() - moderator.createdAt) / (1000 * 60 * 60 * 24))),
-                lastActive: moderator.lastActive,
-                status: moderator.activeStatus
-            }));
+                
+            // Fetch user details separately with proper string ID matching
+            const moderatorUserIds = moderators.map(mod => mod.userId);
+            const users = await User.find({ userId: { $in: moderatorUserIds } })
+                .select('name email')
+                .lean();
+                
+            // Create a lookup map for fast access
+            const userMap = {};
+            users.forEach(user => {
+                userMap[user.userId] = user;
+            });
+            
+            const moderatorStats = moderators.map(moderator => {
+                const user = userMap[moderator.userId] || { name: 'Unknown', email: 'Unknown' };
+                
+                return {
+                    ...moderator,
+                    user: {
+                        name: user.name,
+                        email: user.email
+                    },
+                    dailyAverage: moderator.totalScans / 
+                        Math.max(1, Math.ceil((Date.now() - new Date(moderator.createdAt).getTime()) / (1000 * 60 * 60 * 24))),
+                    lastActive: moderator.lastActive,
+                    status: moderator.activeStatus
+                };
+            });
 
             reply.send(moderatorStats);
         } catch (error) {

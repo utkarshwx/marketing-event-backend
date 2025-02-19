@@ -9,6 +9,7 @@ const rateLimiters = require('../middleware/rateLimiter');
 
 async function authRoutes(fastify) {
     // Register user - limit to prevent spam account creation
+    // Register user with optimizations
     fastify.route({
         method: 'POST',
         url: '/register',
@@ -17,14 +18,47 @@ async function authRoutes(fastify) {
             try {
                 const { name, email, phoneno, password } = request.body;
 
-                // Check if user exists
-                const existingUser = await User.findOne({ email });
-                if (existingUser) {
-                    return reply.code(400).send({ error: 'Email already registered' });
+                // Validate inputs
+                if (!name || !email || !phoneno || !password) {
+                    return reply.code(400).send({ 
+                        error: 'Missing required fields',
+                        requiredFields: ['name', 'email', 'phoneno', 'password']
+                    });
                 }
 
-                // Hash password
-                const hashedPassword = await bcrypt.hash(password, config.BCRYPT_SALT_ROUNDS);
+                // Check if user exists - using lean() for faster query
+                const existingUser = await User.findOne({
+                    $or: [
+                        { email },
+                        { phoneNumber: phoneno }
+                    ]
+                }).lean();
+
+                // Provide specific feedback about which field is duplicate
+                if (existingUser) {
+                    if (existingUser.email === email) {
+                        return reply.code(409).send({ 
+                            error: 'Email already registered',
+                            field: 'email'
+                        });
+                    } else if (existingUser.phoneNumber === phoneno) {
+                        return reply.code(409).send({ 
+                            error: 'Phone number already registered',
+                            field: 'phoneno'
+                        });
+                    } else {
+                        return reply.code(409).send({ error: 'User already exists' });
+                    }
+                }
+
+                // Start password hashing (CPU-intensive operation) early
+                const hashedPasswordPromise = bcrypt.hash(password, config.BCRYPT_SALT_ROUNDS);
+
+                // Generate OTP in parallel
+                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                
+                // Wait for password hashing to complete
+                const hashedPassword = await hashedPasswordPromise;
 
                 // Create user
                 const user = new User({
@@ -35,31 +69,73 @@ async function authRoutes(fastify) {
                     role: 'user'
                 });
 
+                // Save user first and get the ID
                 await user.save();
 
-                // Generate OTP
-                const otp = Math.floor(100000 + Math.random() * 900000).toString();
+                // Create OTP verification record
                 const otpVerification = new OTPVerification({
                     userId: user.userId,
                     otp,
                     expiresAt: new Date(Date.now() + config.OTP_EXPIRY_MINUTES * 60000)
                 });
 
-                await otpVerification.save();
-                await sendOtpMail(user.email, otp, user.name);
+                // Send OTP email asynchronously (don't wait for it)
+                const emailPromise = sendOtpMail(user.email, otp, user.name)
+                    .catch(err => {
+                        // Log email failure but don't fail the registration
+                        console.error(`Failed to send OTP email to ${user.email}:`, err);
+                        request.log.error({
+                            action: 'otp_email_failed',
+                            userId: user.userId,
+                            email: user.email,
+                            error: err.message
+                        });
+                    });
 
+                // Save OTP verification in parallel with email sending
+                await otpVerification.save();
+
+                // Log successful registration
+                request.log.info({
+                    action: 'user_registered',
+                    userId: user.userId,
+                    email: user.email,
+                    ip: request.ip
+                });
+
+                // Return response without waiting for email to be sent
                 reply.code(201).send({
                     message: 'Registration successful. Please verify your email.',
                     userId: user.userId
                 });
+                
+                // No need to await emailPromise - let it complete in the background
             } catch (error) {
+                // Handle duplicate key errors more gracefully
+                if (error.code === 11000) {
+                    const field = Object.keys(error.keyValue)[0];
+                    const value = error.keyValue[field];
+                    
+                    // Log duplicate registration attempt
+                    request.log.warn({
+                        action: 'duplicate_registration_attempt',
+                        field,
+                        value: field === 'email' ? value : '[REDACTED]', // Don't log phone numbers
+                        ip: request.ip
+                    });
+                    
+                    return reply.code(409).send({ 
+                        error: `This ${field} is already registered`,
+                        field
+                    });
+                }
+                
                 console.error("Registration error:", error);
                 reply.code(500).send({ error: 'Internal server error' });
             }
         }
     });
 
-    // Verify email - limit to prevent OTP brute force
     fastify.route({
         method: 'POST',
         url: '/verify-email',
@@ -67,27 +143,50 @@ async function authRoutes(fastify) {
         handler: async (request, reply) => {
             try {
                 const { userId, otp } = request.body;
-
+    
+                // Find the most recent valid OTP for this user
                 const verification = await OTPVerification.findOne({
                     userId,
+                    otp, // Match the exact OTP
                     isVerified: false,
                     expiresAt: { $gt: new Date() }
-                });
-
-                if (!verification || verification.otp !== otp) {
+                }).sort({ createdAt: -1 }); // Get the most recently created OTP
+                
+                if (!verification) {
                     return reply.code(400).send({ error: 'Invalid or expired OTP' });
                 }
-
+    
                 // Update verification status
                 verification.isVerified = true;
                 await verification.save();
-
+    
+                // Expire all other OTPs for this user (for cleanup)
+                await OTPVerification.updateMany(
+                    { 
+                        userId,
+                        _id: { $ne: verification._id }, // Exclude the one we just verified
+                        isVerified: false 
+                    },
+                    { 
+                        $set: { 
+                            expiresAt: new Date()  // Expire all other OTPs
+                        } 
+                    }
+                );
+    
                 // Update user email verification status
                 await User.findOneAndUpdate(
                     { userId },
                     { isEmailVerified: true }
                 );
-
+    
+                // Log verification success
+                request.log.info({
+                    action: 'email_verified',
+                    userId: userId,
+                    ip: request.ip
+                });
+    
                 reply.send({ message: 'Email verified successfully' });
             } catch (error) {
                 console.error("Email verification error:", error);
@@ -191,6 +290,20 @@ async function authRoutes(fastify) {
                     return reply.code(400).send({ error: 'Email already verified' });
                 }
 
+                // First, invalidate all existing OTPs for this user
+                await OTPVerification.updateMany(
+                    { 
+                        userId,
+                        isVerified: false,
+                        expiresAt: { $gt: new Date() } 
+                    },
+                    { 
+                        $set: { 
+                            expiresAt: new Date() // Expire all existing OTPs
+                        } 
+                    }
+                );
+
                 // Generate new OTP
                 const otp = Math.floor(100000 + Math.random() * 900000).toString();
                 const otpVerification = new OTPVerification({
@@ -201,6 +314,13 @@ async function authRoutes(fastify) {
 
                 await otpVerification.save();
                 await sendOtpMail(user.email, otp, user.name);
+
+                // Log OTP resend activity
+                request.log.info({
+                    action: 'otp_resent',
+                    userId: user.userId,
+                    ip: request.ip
+                });
 
                 reply.send({ message: 'New OTP sent successfully' });
             } catch (error) {
@@ -267,12 +387,13 @@ async function authRoutes(fastify) {
             try {
                 const { userId, otp, newPassword } = request.body;
 
+                // Find the most recent valid OTP for this user
                 const verification = await OTPVerification.findOne({
                     userId,
                     otp,
                     isVerified: false,
                     expiresAt: { $gt: new Date() }
-                });
+                }).sort({ createdAt: -1 }); // Get the most recently created OTP
 
                 if (!verification) {
                     return reply.code(400).send({ error: 'Invalid or expired OTP' });
@@ -290,6 +411,20 @@ async function authRoutes(fastify) {
                 // Mark OTP as verified
                 verification.isVerified = true;
                 await verification.save();
+                
+                // Expire all other OTPs for this user
+                await OTPVerification.updateMany(
+                    { 
+                        userId,
+                        _id: { $ne: verification._id }, // Exclude the one we just verified
+                        isVerified: false 
+                    },
+                    { 
+                        $set: { 
+                            expiresAt: new Date()  // Expire all other OTPs
+                        } 
+                    }
+                );
 
                 // Log successful password reset
                 request.log.info({

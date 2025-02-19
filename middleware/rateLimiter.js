@@ -55,37 +55,41 @@ const createRateLimiter = (limit, windowMs, keyGenerator = req => req.ip) => {
 };
 
 // Predefined rate limiters for different scenarios
+// Optimized rate limiter for development and production environments
 const rateLimiters = {
-    // Login attempts - strict limits to prevent brute force
-    login: createRateLimiter(5, 5 * 60 * 1000), // 5 attempts per 5 minutes per IP
+    // Login attempts - balancing security with usability
+    login: createRateLimiter(10, 5 * 60 * 1000), // 10 attempts per 5 minutes per IP
     
     // Login with additional fingerprinting for better security
-    loginStrict: createRateLimiter(5, 5 * 60 * 1000, 
+    loginStrict: createRateLimiter(8, 5 * 60 * 1000, 
         req => `${req.ip}-${req.headers['user-agent'] || 'unknown'}`),
     
     // Account recovery operations 
-    accountRecovery: createRateLimiter(3, 15 * 60 * 1000), // 3 attempts per 15 minutes
+    accountRecovery: createRateLimiter(5, 15 * 60 * 1000), // 5 attempts per 15 minutes
     
     // OTP verification attempts
-    otpVerification: createRateLimiter(5, 10 * 60 * 1000), // 5 attempts per 10 minutes
+    otpVerification: createRateLimiter(10, 10 * 60 * 1000), // 10 attempts per 10 minutes
     
-    // New account registrations
-    registration: createRateLimiter(3, 60 * 60 * 1000), // 3 new accounts per hour per IP
+    // New account registrations - less restrictive in development
+    registration: config.isDevelopment() 
+        ? createRateLimiter(20, 60 * 60 * 1000) // 20 registrations per hour in development
+        : createRateLimiter(10, 60 * 60 * 1000), // 10 registrations per hour in production
     
     // QR code scan attempts by moderators
-    qrScan: createRateLimiter(60, 60 * 60 * 1000), // 60 scans per hour
+    qrScan: createRateLimiter(120, 60 * 60 * 1000), // 120 scans per hour
     
     // Admin operations
-    adminOperations: createRateLimiter(30, 60 * 60 * 1000), // 30 operations per hour
+    adminOperations: createRateLimiter(60, 60 * 60 * 1000), // 60 operations per hour
     
-    // Global limiter for all API requests
+    // Global limiter - more reasonable defaults
     global: createRateLimiter(
-        config.RATE_LIMIT_MAX_REQUESTS || 100,
+        config.isDevelopment() 
+            ? 500  // Higher limit for development
+            : (config.RATE_LIMIT_MAX_REQUESTS || 200),
         config.RATE_LIMIT_WINDOW_MS || 900000
     ),
     
     // Create a custom rate limiter with config
     custom: (limit, windowMs, keyGen) => createRateLimiter(limit, windowMs, keyGen)
 };
-
 module.exports = rateLimiters;

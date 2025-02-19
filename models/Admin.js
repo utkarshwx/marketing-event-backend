@@ -5,7 +5,17 @@ const adminActivitySchema = new Schema({
     action: {
         type: String,
         required: true,
-        enum: ['create_event', 'update_event', 'delete_event', 'modify_user', 'generate_report']
+        enum: [
+            'create_event', 
+            'update_event', 
+            'delete_event', 
+            'modify_user', 
+            'generate_report',
+            'login',
+            'permission_check',
+            'deactivate_event',
+            'create_moderator'
+        ]
     },
     details: {
         type: Schema.Types.Mixed
