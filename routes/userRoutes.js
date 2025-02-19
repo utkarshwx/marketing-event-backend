@@ -2,6 +2,9 @@ const User = require('../models/User');
 const Event = require('../models/Event');
 const Payment = require('../models/Payment');
 const { authenticateUser } = require('../middleware/auth');
+const razorpayService = require('../utils/razorpayService');
+const config = require('../config/config');
+const generateId = require('../worker/generateId'); // Added this import
 
 async function userRoutes(fastify) {
     // Get user profile
@@ -29,10 +32,11 @@ async function userRoutes(fastify) {
         }
     });
 
-    // Initiate payment
+    // Initiate payment with Razorpay
     fastify.post('/payments/initiate', { preHandler: authenticateUser }, async (request, reply) => {
         try {
             const { userId } = request.user;
+            const user = await User.findOne({ userId });
 
             // Check if payment already exists
             const existingPayment = await Payment.findOne({
@@ -44,28 +48,135 @@ async function userRoutes(fastify) {
                 return reply.code(400).send({ error: 'Payment already completed' });
             }
 
+            // Create a new payment record with an ID generated before saving
             const payment = new Payment({
                 userId,
-                amount: 1000, // Example amount
+                amount: 1000, // Example amount (₹1000)
                 status: 'pending'
             });
+            
+            // Generate and set paymentId before saving
+            payment.paymentId = await generateId('PAY');
+            
+            // Now save the payment with a guaranteed paymentId
             await payment.save();
 
-            // Initialize payment gateway
-            const paymentData = {
-                merchantId: process.env.BILLDESK_MERCHANT_ID,
-                paymentId: payment.paymentId,
+            // Create Razorpay order
+            const order = await razorpayService.createOrder({
                 amount: payment.amount,
-                callbackUrl: process.env.BILLDESK_CALLBACK_URL
-            };
+                receipt: payment.paymentId,
+                userId
+            });
 
-            reply.send({
-                paymentUrl: 'your-payment-gateway-url',
+            // Update the payment with the order ID
+            payment.razorpayOrderId = order.id;
+            await payment.save();
+
+            // Log order creation
+            request.log.info({
+                action: 'razorpay_order_created',
+                userId,
                 paymentId: payment.paymentId,
-                paymentData
+                orderId: order.id
+            });
+
+            // Return order details for frontend
+            reply.send({
+                paymentId: payment.paymentId,
+                orderId: order.id,
+                amount: order.amount / 100, // Convert paisa to rupees
+                currency: order.currency,
+                key: config.RAZORPAY_KEY_ID,
+                name: 'KIIT Event Registration',
+                description: 'Event Registration Fee',
+                prefillData: {
+                    name: user.name,
+                    email: user.email,
+                    contact: user.phoneNumber
+                },
+                callbackUrl: config.RAZORPAY_CALLBACK_URL
             });
         } catch (error) {
-            reply.code(500).send({ error: 'Internal server error' });
+            console.error('Payment initiation error:', error);
+            reply.code(500).send({ error: 'Failed to initiate payment' });
+        }
+    });
+
+    // Verify Razorpay payment
+    fastify.post('/payments/verify', { preHandler: authenticateUser }, async (request, reply) => {
+        try {
+            const { orderId, paymentId, signature } = request.body;
+            const { userId } = request.user;
+
+            // Verify payment signature
+            const isValidSignature = razorpayService.verifyPaymentSignature({
+                orderId,
+                paymentId,
+                signature
+            });
+
+            if (!isValidSignature) {
+                request.log.warn({
+                    action: 'invalid_payment_signature',
+                    userId,
+                    paymentId,
+                    ip: request.ip
+                });
+                return reply.code(400).send({ error: 'Invalid payment signature' });
+            }
+
+            // Get payment details from Razorpay
+            const paymentDetails = await razorpayService.fetchPaymentDetails(paymentId);
+            
+            // Check if payment is successful
+            if (paymentDetails.status !== 'captured') {
+                return reply.code(400).send({ 
+                    error: 'Payment not completed',
+                    status: paymentDetails.status
+                });
+            }
+
+            // Find and update the payment record
+            const payment = await Payment.findOne({ 
+                userId,
+                status: 'pending'
+            });
+
+            if (!payment) {
+                return reply.code(404).send({ error: 'Payment record not found' });
+            }
+
+            // Update payment status
+            payment.status = 'success';
+            payment.transactionId = paymentId;
+            payment.gatewayResponse = JSON.stringify(paymentDetails);
+            payment.paymentDate = new Date();
+            await payment.save();
+
+            // Update user payment status
+            const user = await User.findOne({ userId });
+            user.hasValidPayment = true;
+            await user.save();
+
+            // Generate QR code for the user
+            await user.generateQRCode();
+
+            // Log successful payment
+            request.log.info({
+                action: 'payment_successful',
+                userId,
+                paymentId,
+                amount: payment.amount
+            });
+
+            reply.send({
+                success: true,
+                message: 'Payment verified successfully',
+                qrCode: user.qrCode.code
+            });
+        } catch (error) {
+            console.error('Payment verification error:', error);
+            reply.code(500).send({ error: 'Payment verification failed' });
         }
     });
 

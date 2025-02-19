@@ -181,58 +181,108 @@ fastify.register(adminRoutes, {
   preHandler: authenticateAdmin
 });
 
-// Handle payment webhook (public route but rate limited)
+// Handle Razorpay payment webhook (public route but rate limited)
 fastify.post('/api/payments/webhook', {
   preHandler: rateLimiters.custom(100, 60 * 1000) // 100 requests per minute for webhook
 }, async (request, reply) => {
   try {
-      // Validate webhook signature if using a payment gateway that supports it
-      // This adds another layer of security beyond rate limiting
-      
-      const { paymentId, status, transactionId, gatewayResponse } = request.body;
+    // Verify webhook signature
+    const webhookSignature = request.headers['x-razorpay-signature'];
+    if (!webhookSignature) {
+      request.log.warn({
+        action: 'webhook_missing_signature',
+        ip: request.ip
+      });
+      return reply.code(400).send({ error: 'Missing webhook signature' });
+    }
 
-      const payment = await Payment.findOne({ paymentId });
+    // Verify signature
+    const payload = JSON.stringify(request.body);
+    const expectedSignature = crypto.createHmac('sha256', config.RAZORPAY_WEBHOOK_SECRET)
+      .update(payload)
+      .digest('hex');
+
+    if (expectedSignature !== webhookSignature) {
+      request.log.warn({
+        action: 'webhook_invalid_signature',
+        ip: request.ip
+      });
+      return reply.code(401).send({ error: 'Invalid webhook signature' });
+    }
+
+    // Process payment based on event type
+    const event = request.body.event;
+    
+    if (event === 'payment.captured') {
+      const { order_id, id: paymentId } = request.body.payload.payment.entity;
+      
+      // Find the payment record by matching the order ID from the receipt field
+      const payment = await Payment.findOne({ paymentId: order_id.split('_')[1] });
       if (!payment) {
-          return reply.code(404).send({ error: 'Payment not found' });
+        request.log.error({
+          action: 'payment_not_found',
+          orderId: order_id,
+          paymentId,
+          ip: request.ip
+        });
+        return reply.code(404).send({ error: 'Payment not found' });
       }
 
       // Log payment update from webhook
       request.log.info({
-          action: 'payment_webhook_received',
-          paymentId,
-          status,
-          transactionId,
-          ip: request.ip
+        action: 'payment_webhook_received',
+        paymentId,
+        status: 'success',
+        orderId: order_id,
+        ip: request.ip
       });
 
-      payment.status = status;
-      payment.transactionId = transactionId;
-      payment.gatewayResponse = gatewayResponse;
+      // Update payment record
+      payment.status = 'success';
+      payment.transactionId = paymentId;
+      payment.gatewayResponse = JSON.stringify(request.body.payload.payment.entity);
       payment.paymentDate = new Date();
       await payment.save();
 
-      if (status === 'success') {
-          // Update user payment status
-          const user = await User.findOne({ userId: payment.userId });
-          user.hasValidPayment = true;
-          await user.save();
+      // Update user payment status
+      const user = await User.findOne({ userId: payment.userId });
+      user.hasValidPayment = true;
+      await user.save();
 
-          // Generate QR code
-          await user.generateQRCode();
-          
-          // Log successful payment
-          request.log.info({
-              action: 'payment_successful',
-              paymentId,
-              userId: payment.userId,
-              amount: payment.amount
-          });
+      // Generate QR code
+      await user.generateQRCode();
+      
+      // Log successful payment
+      request.log.info({
+        action: 'payment_successful',
+        paymentId,
+        userId: payment.userId,
+        amount: payment.amount
+      });
+    } else if (event === 'payment.failed') {
+      const { order_id, id: paymentId } = request.body.payload.payment.entity;
+      
+      // Find payment by orderId
+      const payment = await Payment.findOne({ paymentId: order_id.split('_')[1] });
+      if (payment) {
+        payment.status = 'failed';
+        payment.transactionId = paymentId;
+        payment.gatewayResponse = JSON.stringify(request.body.payload.payment.entity);
+        await payment.save();
+
+        request.log.info({
+          action: 'payment_failed',
+          paymentId,
+          userId: payment.userId,
+          reason: request.body.payload.payment.entity.error_description || 'Payment failed'
+        });
       }
+    }
 
-      reply.send({ message: 'Payment status updated' });
+    reply.send({ message: 'Webhook processed successfully' });
   } catch (error) {
-      request.log.error('Payment webhook error:', error);
-      reply.code(500).send({ error: 'Internal server error' });
+    request.log.error('Payment webhook error:', error);
+    reply.code(500).send({ error: 'Internal server error' });
   }
 });
 

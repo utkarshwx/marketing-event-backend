@@ -426,35 +426,217 @@ async function adminRoutes(fastify) {
     });
 
     // Get Payment Reports
-    fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (request, reply) => {
-        try {
-            const { startDate, endDate } = request.query;
-            const query = {
-                createdAt: {
-                    $gte: new Date(startDate || Date.now() - 30 * 24 * 60 * 60 * 1000),
-                    $lte: new Date(endDate || Date.now())
+    // Get Payment Reports with Razorpay details
+fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (request, reply) => {
+    try {
+        const { startDate, endDate } = request.query;
+        const query = {
+            createdAt: {
+                $gte: new Date(startDate || Date.now() - 30 * 24 * 60 * 60 * 1000),
+                $lte: new Date(endDate || Date.now())
+            }
+        };
+
+        const payments = await Payment.find(query)
+            .populate('userId', 'name email')
+            .lean();
+
+        // Process payment data to include Razorpay specific information
+        const processedPayments = payments.map(payment => {
+            let razorpayDetails = {};
+            
+            if (payment.gatewayResponse) {
+                try {
+                    const gatewayData = JSON.parse(payment.gatewayResponse);
+                    razorpayDetails = {
+                        paymentMethod: gatewayData.method || 'unknown',
+                        bank: gatewayData.bank || 'N/A',
+                        cardNetwork: gatewayData.card?.network || 'N/A',
+                        upiId: gatewayData.vpa?.descriptor || 'N/A',
+                        fee: gatewayData.fee || 0,
+                        tax: gatewayData.tax || 0
+                    };
+                } catch (e) {
+                    // If JSON parsing fails, continue with empty details
+                    console.error('Error parsing gateway response:', e);
                 }
+            }
+            
+            return {
+                ...payment,
+                gateway: 'Razorpay',
+                razorpayDetails
             };
+        });
 
-            const payments = await Payment.find(query)
-                .populate('userId', 'name email')
-                .lean();
-
-            const report = {
-                totalPayments: payments.length,
-                successfulPayments: payments.filter(p => p.status === 'success').length,
-                totalAmount: payments.reduce((sum, p) => sum + (p.status === 'success' ? p.amount : 0), 0),
-                paymentsByDate: payments.reduce((acc, p) => {
+        // Calculate reports
+        const report = {
+            totalPayments: processedPayments.length,
+            successfulPayments: processedPayments.filter(p => p.status === 'success').length,
+            failedPayments: processedPayments.filter(p => p.status === 'failed').length,
+            pendingPayments: processedPayments.filter(p => p.status === 'pending').length,
+            totalAmount: processedPayments.reduce((sum, p) => sum + (p.status === 'success' ? p.amount : 0), 0),
+            
+            // Payment method breakdown
+            paymentMethods: processedPayments.reduce((acc, p) => {
+                if (p.status === 'success' && p.razorpayDetails.paymentMethod) {
+                    const method = p.razorpayDetails.paymentMethod;
+                    acc[method] = (acc[method] || 0) + 1;
+                }
+                return acc;
+            }, {}),
+            
+            // Daily payments
+            paymentsByDate: processedPayments.reduce((acc, p) => {
+                if (p.status === 'success') {
                     const date = p.createdAt.toISOString().split('T')[0];
-                    acc[date] = (acc[date] || 0) + (p.status === 'success' ? p.amount : 0);
-                    return acc;
-                }, {})
-            };
+                    acc[date] = (acc[date] || 0) + p.amount;
+                }
+                return acc;
+            }, {}),
+            
+            // Refund statistics
+            refunds: {
+                total: processedPayments.filter(p => p.refundStatus === 'completed').length,
+                pending: processedPayments.filter(p => ['requested', 'processing'].includes(p.refundStatus)).length,
+                amount: processedPayments.reduce((sum, p) => sum + (p.refundStatus === 'completed' ? (p.refundAmount || 0) : 0), 0)
+            },
+            
+            // Gateway fees
+            gatewayFees: processedPayments.reduce((sum, p) => {
+                if (p.status === 'success' && p.razorpayDetails.fee) {
+                    return sum + p.razorpayDetails.fee;
+                }
+                return sum;
+            }, 0),
+            
+            // Recent payments (last 10)
+            recentPayments: processedPayments
+                .filter(p => p.status === 'success')
+                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                .slice(0, 10)
+                .map(p => ({
+                    id: p.paymentId,
+                    user: p.userId?.name || 'Unknown',
+                    email: p.userId?.email || 'Unknown',
+                    amount: p.amount,
+                    date: p.paymentDate || p.createdAt,
+                    method: p.razorpayDetails.paymentMethod || 'Unknown'
+                }))
+        };
 
-            reply.send(report);
+        reply.send(report);
+    } catch (error) {
+        console.error('Payment report error:', error);
+        reply.code(500).send({ error: 'Internal server error' });
+    }
+});
+
+    // Get detailed payment information
+    fastify.get('/payments/:paymentId', { preHandler: authenticateAdmin }, async (request, reply) => {
+        try {
+            const { paymentId } = request.params;
+            
+            const payment = await Payment.findOne({ paymentId })
+                .populate('userId', 'name email phoneNumber')
+                .lean();
+                
+            if (!payment) {
+                return reply.code(404).send({ error: 'Payment not found' });
+            }
+            
+            // Parse gateway response if available
+            let gatewayData = {};
+            if (payment.gatewayResponse) {
+                try {
+                    gatewayData = JSON.parse(payment.gatewayResponse);
+                } catch (e) {
+                    console.error('Error parsing gateway response:', e);
+                }
+            }
+            
+            const paymentDetails = {
+                ...payment,
+                gatewayData,
+                gateway: 'Razorpay'
+            };
+            
+            reply.send(paymentDetails);
         } catch (error) {
-            console.error('Payment report error:', error);
+            console.error('Payment detail error:', error);
             reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
+
+    // Initiate refund for a payment
+    fastify.post('/payments/:paymentId/refund', { 
+        preHandler: [authenticateAdmin, checkAdminPermission('canGenerateReports')]
+    }, async (request, reply) => {
+        try {
+            const { paymentId } = request.params;
+            const { amount, reason } = request.body;
+            const { userId: adminId } = request.user;
+            
+            const payment = await Payment.findOne({ paymentId });
+            if (!payment) {
+                return reply.code(404).send({ error: 'Payment not found' });
+            }
+            
+            if (payment.status !== 'success') {
+                return reply.code(400).send({ error: 'Only successful payments can be refunded' });
+            }
+            
+            if (payment.refundStatus !== 'none') {
+                return reply.code(400).send({ 
+                    error: `Refund already ${payment.refundStatus}`,
+                    refundStatus: payment.refundStatus
+                });
+            }
+            
+            // Get Razorpay payment details
+            const razorpayService = require('../services/razorpayService');
+            const refundAmount = amount || payment.amount;
+            
+            // Initiate refund in Razorpay
+            const refund = await razorpayService.initiateRefund(
+                payment.transactionId,
+                refundAmount * 100 // Convert to paisa
+            );
+            
+            // Update payment record
+            payment.refundStatus = 'processing';
+            payment.refundId = refund.id;
+            payment.refundAmount = refundAmount;
+            payment.refundDate = new Date();
+            await payment.save();
+            
+            // Log admin activity
+            const admin = await Admin.findOne({ userId: adminId });
+            await admin.logActivity('payment_refund', {
+                paymentId,
+                amount: refundAmount,
+                reason,
+                refundId: refund.id
+            });
+            
+            // Log refund initiation
+            request.log.info({
+                action: 'payment_refund_initiated',
+                adminId,
+                paymentId,
+                refundId: refund.id,
+                amount: refundAmount
+            });
+            
+            reply.send({
+                success: true,
+                message: 'Refund initiated successfully',
+                refundId: refund.id,
+                status: 'processing'
+            });
+        } catch (error) {
+            console.error('Refund initiation error:', error);
+            reply.code(500).send({ error: 'Failed to initiate refund' });
         }
     });
 

@@ -42,10 +42,11 @@ const config = {
     OTP_EXPIRY_MINUTES: parseInt(process.env.OTP_EXPIRY_MINUTES || '15', 10),
     OTP_LENGTH: parseInt(process.env.OTP_LENGTH || '6', 10),
     
-    // Payment Gateway Configuration
-    BILLDESK_MERCHANT_ID: process.env.BILLDESK_MERCHANT_ID,
-    BILLDESK_SECRET_KEY: process.env.BILLDESK_SECRET_KEY,
-    BILLDESK_CALLBACK_URL: process.env.BILLDESK_CALLBACK_URL,
+    // Payment Gateway Configuration (Changed from BillDesk to Razorpay)
+    RAZORPAY_KEY_ID: process.env.RAZORPAY_KEY_ID,
+    RAZORPAY_KEY_SECRET: process.env.RAZORPAY_KEY_SECRET,
+    RAZORPAY_WEBHOOK_SECRET: process.env.RAZORPAY_WEBHOOK_SECRET,
+    RAZORPAY_CALLBACK_URL: process.env.RAZORPAY_CALLBACK_URL,
 
     // Event Configuration
     MAX_EVENT_CAPACITY: parseInt(process.env.MAX_EVENT_CAPACITY || '1000', 10),
@@ -82,9 +83,10 @@ if (config.isProduction()) {
         { key: 'SMTP_USER', message: 'SMTP user is required' },
         { key: 'SMTP_PASS', message: 'SMTP password is required' },
         { key: 'SMTP_SENDER_NAME', message: 'SMTP sender name is required' },
-        { key: 'BILLDESK_MERCHANT_ID', message: 'BillDesk merchant ID is required' },
-        { key: 'BILLDESK_SECRET_KEY', message: 'BillDesk secret key is required' },
-        { key: 'BILLDESK_CALLBACK_URL', message: 'BillDesk callback URL is required' },
+        { key: 'RAZORPAY_KEY_ID', message: 'Razorpay key ID is required' },
+        { key: 'RAZORPAY_KEY_SECRET', message: 'Razorpay key secret is required' },
+        { key: 'RAZORPAY_WEBHOOK_SECRET', message: 'Razorpay webhook secret is required' },
+        { key: 'RAZORPAY_CALLBACK_URL', message: 'Razorpay callback URL is required' },
         { key: 'ADMIN_DEFAULT_PASSWORD', message: 'Admin default password is required' }
     ];
 
