@@ -19,11 +19,11 @@ async function adminRoutes(fastify) {
         preHandler: rateLimiters.loginStrict
     }, async (request, reply) => {
         try {
-            const { username, password } = request.body;
+            const { email, password } = request.body;
 
             // First find the user with admin role
             const adminUser = await User.findOne({ 
-                email: username,
+                email: email,
                 role: 'admin'
             });
             
@@ -31,7 +31,7 @@ async function adminRoutes(fastify) {
                 // Log failed admin login attempt
                 request.log.warn({
                     action: 'failed_admin_login',
-                    username,
+                    email,
                     ip: request.ip,
                     userAgent: request.headers['user-agent']
                 });
@@ -45,7 +45,7 @@ async function adminRoutes(fastify) {
                 // Log failed admin login attempt
                 request.log.warn({
                     action: 'failed_admin_login_invalid_password',
-                    username,
+                    email,
                     ip: request.ip,
                     userAgent: request.headers['user-agent']
                 });
