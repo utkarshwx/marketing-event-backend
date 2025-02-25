@@ -51,7 +51,7 @@ async function userRoutes(fastify) {
             // Create a new payment record with an ID generated before saving
             const payment = new Payment({
                 userId,
-                amount: 1000, // Example amount (₹1000)
+                amount: 1, // Example amount (₹1000)
                 status: 'pending'
             });
             
