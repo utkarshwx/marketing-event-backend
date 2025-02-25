@@ -184,6 +184,24 @@ async function adminRoutes(fastify) {
         }
     });
 
+    // User Management
+    // Get all users
+    fastify.get('/users', {
+        preHandler: [
+            authenticateAdmin,
+            checkAdminPermission('canViewUsers'),
+            rateLimiters.adminOperations
+        ]
+    }, async (request, reply) => {
+        try {
+            const users = await User.find({ role: 'user' });
+            reply.send(users);
+        } catch (error) {
+            console.error('Get all users error:', error);
+            reply.code(500).send({ error: 'Internal server error' });
+        }   
+    });
+
     // Event Management
     // Create Event
     fastify.post('/events', {
