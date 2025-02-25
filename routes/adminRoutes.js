@@ -3,9 +3,9 @@ const Admin = require('../models/Admin');
 const Event = require('../models/Event');
 const Payment = require('../models/Payment');
 const Moderator = require('../models/Moderator');
-const { 
-    authenticateAdmin, 
-    checkAdminPermission 
+const {
+    authenticateAdmin,
+    checkAdminPermission
 } = require('../middleware/auth');
 const bcrypt = require('bcrypt');
 const config = require('../config/config');
@@ -22,11 +22,11 @@ async function adminRoutes(fastify) {
             const { email, password } = request.body;
 
             // First find the user with admin role
-            const adminUser = await User.findOne({ 
+            const adminUser = await User.findOne({
                 email: email,
                 role: 'admin'
             });
-            
+
             if (!adminUser) {
                 // Log failed admin login attempt
                 request.log.warn({
@@ -35,7 +35,7 @@ async function adminRoutes(fastify) {
                     ip: request.ip,
                     userAgent: request.headers['user-agent']
                 });
-                
+
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
@@ -49,7 +49,7 @@ async function adminRoutes(fastify) {
                     ip: request.ip,
                     userAgent: request.headers['user-agent']
                 });
-                
+
                 return reply.code(401).send({ error: 'Invalid credentials' });
             }
 
@@ -61,7 +61,7 @@ async function adminRoutes(fastify) {
                     userId: adminUser.userId,
                     ip: request.ip
                 });
-                
+
                 return reply.code(500).send({ error: 'Admin profile not found' });
             }
 
@@ -74,7 +74,7 @@ async function adminRoutes(fastify) {
             // Update last login and log activity
             admin.lastLogin = new Date();
             await admin.save();
-            await admin.logActivity('login', { 
+            await admin.logActivity('login', {
                 timestamp: new Date(),
                 ip: request.ip,
                 userAgent: request.headers['user-agent']
@@ -87,7 +87,7 @@ async function adminRoutes(fastify) {
                 ip: request.ip
             });
 
-            reply.send({ 
+            reply.send({
                 token,
                 admin: {
                     userId: adminUser.userId,
@@ -102,7 +102,7 @@ async function adminRoutes(fastify) {
         }
     });
 
-    fastify.get('/dashboard', { 
+    fastify.get('/dashboard', {
         preHandler: [
             authenticateAdmin,
             rateLimiters.custom(30, 60 * 1000) // 30 requests per minute
@@ -112,12 +112,12 @@ async function adminRoutes(fastify) {
             // Get various statistics
             const stats = {
                 totalUsers: await User.countDocuments({ role: 'user' }),
-                activeUsers: await User.countDocuments({ 
+                activeUsers: await User.countDocuments({
                     role: 'user',
-                    hasValidPayment: true 
+                    hasValidPayment: true
                 }),
                 totalEvents: await Event.countDocuments(),
-                activeEvents: await Event.countDocuments({ 
+                activeEvents: await Event.countDocuments({
                     isActive: true,
                     eventStatus: { $in: ['upcoming', 'ongoing'] }
                 }),
@@ -128,7 +128,7 @@ async function adminRoutes(fastify) {
                 ]))[0]?.total || 0,
                 moderatorStats: {
                     total: await User.countDocuments({ role: 'moderator' }),
-                    active: await User.countDocuments({ 
+                    active: await User.countDocuments({
                         role: 'moderator',
                         'moderator.activeStatus': 'active'
                     })
@@ -152,11 +152,43 @@ async function adminRoutes(fastify) {
         }
     });
 
+    fastify.get('/profile', {
+        preHandler: authenticateAdmin
+    }, async (request, reply) => {
+        try {
+            const admin = await Admin.findOne({ userId: request.user.adminId });
+            reply.send(admin);
+        } catch (error) {
+            console.error('Admin profile error:', error);
+            reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
+
+    fastify.put('/profile', {
+        preHandler: [
+            authenticateAdmin,
+            checkAdminPermission('canUpdateProfile'),
+            rateLimiters.adminOperations
+        ]
+    }, async (request, reply) => {
+        try {
+            const { name, email } = request.body;
+            const admin = await Admin.findOne({ userId: request.user.adminId });
+            admin.name = name;
+            admin.email = email;
+            await admin.save();
+            reply.send({ message: 'Profile updated successfully' });
+        } catch (error) {    
+            console.error('Admin profile update error:', error);
+            reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
+
     // Event Management
     // Create Event
-    fastify.post('/events', { 
+    fastify.post('/events', {
         preHandler: [
-            authenticateAdmin, 
+            authenticateAdmin,
             checkAdminPermission('canCreateEvents'),
             rateLimiters.adminOperations
         ]
@@ -167,8 +199,8 @@ async function adminRoutes(fastify) {
 
             // Validate capacity
             if (capacity < config.MIN_EVENT_CAPACITY || capacity > config.MAX_EVENT_CAPACITY) {
-                return reply.code(400).send({ 
-                    error: `Capacity must be between ${config.MIN_EVENT_CAPACITY} and ${config.MAX_EVENT_CAPACITY}` 
+                return reply.code(400).send({
+                    error: `Capacity must be between ${config.MIN_EVENT_CAPACITY} and ${config.MAX_EVENT_CAPACITY}`
                 });
             }
 
@@ -187,9 +219,9 @@ async function adminRoutes(fastify) {
 
             // Log activity
             const admin = await Admin.findOne({ userId: adminId });
-            await admin.logActivity('create_event', { 
+            await admin.logActivity('create_event', {
                 eventId: event.eventId,
-                eventName: event.eventName 
+                eventName: event.eventName
             });
 
             reply.code(201).send(event);
@@ -215,8 +247,8 @@ async function adminRoutes(fastify) {
 
             // Don't allow capacity reduction below current registrations
             if (updates.capacity && updates.capacity < event.registeredCount) {
-                return reply.code(400).send({ 
-                    error: 'New capacity cannot be less than current registrations' 
+                return reply.code(400).send({
+                    error: 'New capacity cannot be less than current registrations'
                 });
             }
 
@@ -227,7 +259,7 @@ async function adminRoutes(fastify) {
 
             // Log activity
             const admin = await Admin.findOne({ userId: adminId });
-            await admin.logActivity('update_event', { 
+            await admin.logActivity('update_event', {
                 eventId: event.eventId,
                 updates: Object.keys(updates)
             });
@@ -266,12 +298,12 @@ async function adminRoutes(fastify) {
 
                 // Log activity
                 const admin = await Admin.findOne({ userId: adminId });
-                await admin.logActivity('deactivate_event', { 
+                await admin.logActivity('deactivate_event', {
                     eventId: event.eventId,
-                    reason: deactivationReason 
+                    reason: deactivationReason
                 });
 
-                return reply.send({ 
+                return reply.send({
                     message: 'Event deactivated due to active registrations',
                     eventId: event.eventId
                 });
@@ -284,7 +316,7 @@ async function adminRoutes(fastify) {
             const admin = await Admin.findOne({ userId: adminId });
             await admin.logActivity('delete_event', { eventId });
 
-            reply.send({ 
+            reply.send({
                 message: 'Event deleted successfully',
                 eventId
             });
@@ -324,7 +356,7 @@ async function adminRoutes(fastify) {
     // Create Moderator
     fastify.post('/moderators', {
         preHandler: [
-            authenticateAdmin, 
+            authenticateAdmin,
             checkAdminPermission('canManageModerators'),
             rateLimiters.adminOperations
         ]
@@ -363,9 +395,9 @@ async function adminRoutes(fastify) {
 
             // Log activity
             const admin = await Admin.findOne({ userId });
-            await admin.logActivity('create_moderator', { 
+            await admin.logActivity('create_moderator', {
                 moderatorId: user.userId,
-                moderatorName: name 
+                moderatorName: name
             });
 
             reply.code(201).send({
@@ -389,29 +421,29 @@ async function adminRoutes(fastify) {
             // Use lean() for better performance, and DON'T try to populate with ObjectId
             const moderators = await Moderator.find()
                 .lean();
-                
+
             // Fetch user details separately with proper string ID matching
             const moderatorUserIds = moderators.map(mod => mod.userId);
             const users = await User.find({ userId: { $in: moderatorUserIds } })
                 .select('name email')
                 .lean();
-                
+
             // Create a lookup map for fast access
             const userMap = {};
             users.forEach(user => {
                 userMap[user.userId] = user;
             });
-            
+
             const moderatorStats = moderators.map(moderator => {
                 const user = userMap[moderator.userId] || { name: 'Unknown', email: 'Unknown' };
-                
+
                 return {
                     ...moderator,
                     user: {
                         name: user.name,
                         email: user.email
                     },
-                    dailyAverage: moderator.totalScans / 
+                    dailyAverage: moderator.totalScans /
                         Math.max(1, Math.ceil((Date.now() - new Date(moderator.createdAt).getTime()) / (1000 * 60 * 60 * 24))),
                     lastActive: moderator.lastActive,
                     status: moderator.activeStatus
@@ -427,124 +459,124 @@ async function adminRoutes(fastify) {
 
     // Get Payment Reports
     // Get Payment Reports with Razorpay details
-fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (request, reply) => {
-    try {
-        const { startDate, endDate } = request.query;
-        const query = {
-            createdAt: {
-                $gte: new Date(startDate || Date.now() - 30 * 24 * 60 * 60 * 1000),
-                $lte: new Date(endDate || Date.now())
-            }
-        };
-
-        const payments = await Payment.find(query)
-            .populate('userId', 'name email')
-            .lean();
-
-        // Process payment data to include Razorpay specific information
-        const processedPayments = payments.map(payment => {
-            let razorpayDetails = {};
-            
-            if (payment.gatewayResponse) {
-                try {
-                    const gatewayData = JSON.parse(payment.gatewayResponse);
-                    razorpayDetails = {
-                        paymentMethod: gatewayData.method || 'unknown',
-                        bank: gatewayData.bank || 'N/A',
-                        cardNetwork: gatewayData.card?.network || 'N/A',
-                        upiId: gatewayData.vpa?.descriptor || 'N/A',
-                        fee: gatewayData.fee || 0,
-                        tax: gatewayData.tax || 0
-                    };
-                } catch (e) {
-                    // If JSON parsing fails, continue with empty details
-                    console.error('Error parsing gateway response:', e);
+    fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (request, reply) => {
+        try {
+            const { startDate, endDate } = request.query;
+            const query = {
+                createdAt: {
+                    $gte: new Date(startDate || Date.now() - 30 * 24 * 60 * 60 * 1000),
+                    $lte: new Date(endDate || Date.now())
                 }
-            }
-            
-            return {
-                ...payment,
-                gateway: 'Razorpay',
-                razorpayDetails
             };
-        });
 
-        // Calculate reports
-        const report = {
-            totalPayments: processedPayments.length,
-            successfulPayments: processedPayments.filter(p => p.status === 'success').length,
-            failedPayments: processedPayments.filter(p => p.status === 'failed').length,
-            pendingPayments: processedPayments.filter(p => p.status === 'pending').length,
-            totalAmount: processedPayments.reduce((sum, p) => sum + (p.status === 'success' ? p.amount : 0), 0),
-            
-            // Payment method breakdown
-            paymentMethods: processedPayments.reduce((acc, p) => {
-                if (p.status === 'success' && p.razorpayDetails.paymentMethod) {
-                    const method = p.razorpayDetails.paymentMethod;
-                    acc[method] = (acc[method] || 0) + 1;
-                }
-                return acc;
-            }, {}),
-            
-            // Daily payments
-            paymentsByDate: processedPayments.reduce((acc, p) => {
-                if (p.status === 'success') {
-                    const date = p.createdAt.toISOString().split('T')[0];
-                    acc[date] = (acc[date] || 0) + p.amount;
-                }
-                return acc;
-            }, {}),
-            
-            // Refund statistics
-            refunds: {
-                total: processedPayments.filter(p => p.refundStatus === 'completed').length,
-                pending: processedPayments.filter(p => ['requested', 'processing'].includes(p.refundStatus)).length,
-                amount: processedPayments.reduce((sum, p) => sum + (p.refundStatus === 'completed' ? (p.refundAmount || 0) : 0), 0)
-            },
-            
-            // Gateway fees
-            gatewayFees: processedPayments.reduce((sum, p) => {
-                if (p.status === 'success' && p.razorpayDetails.fee) {
-                    return sum + p.razorpayDetails.fee;
-                }
-                return sum;
-            }, 0),
-            
-            // Recent payments (last 10)
-            recentPayments: processedPayments
-                .filter(p => p.status === 'success')
-                .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-                .slice(0, 10)
-                .map(p => ({
-                    id: p.paymentId,
-                    user: p.userId?.name || 'Unknown',
-                    email: p.userId?.email || 'Unknown',
-                    amount: p.amount,
-                    date: p.paymentDate || p.createdAt,
-                    method: p.razorpayDetails.paymentMethod || 'Unknown'
-                }))
-        };
+            const payments = await Payment.find(query)
+                .populate('userId', 'name email')
+                .lean();
 
-        reply.send(report);
-    } catch (error) {
-        console.error('Payment report error:', error);
-        reply.code(500).send({ error: 'Internal server error' });
-    }
-});
+            // Process payment data to include Razorpay specific information
+            const processedPayments = payments.map(payment => {
+                let razorpayDetails = {};
+
+                if (payment.gatewayResponse) {
+                    try {
+                        const gatewayData = JSON.parse(payment.gatewayResponse);
+                        razorpayDetails = {
+                            paymentMethod: gatewayData.method || 'unknown',
+                            bank: gatewayData.bank || 'N/A',
+                            cardNetwork: gatewayData.card?.network || 'N/A',
+                            upiId: gatewayData.vpa?.descriptor || 'N/A',
+                            fee: gatewayData.fee || 0,
+                            tax: gatewayData.tax || 0
+                        };
+                    } catch (e) {
+                        // If JSON parsing fails, continue with empty details
+                        console.error('Error parsing gateway response:', e);
+                    }
+                }
+
+                return {
+                    ...payment,
+                    gateway: 'Razorpay',
+                    razorpayDetails
+                };
+            });
+
+            // Calculate reports
+            const report = {
+                totalPayments: processedPayments.length,
+                successfulPayments: processedPayments.filter(p => p.status === 'success').length,
+                failedPayments: processedPayments.filter(p => p.status === 'failed').length,
+                pendingPayments: processedPayments.filter(p => p.status === 'pending').length,
+                totalAmount: processedPayments.reduce((sum, p) => sum + (p.status === 'success' ? p.amount : 0), 0),
+
+                // Payment method breakdown
+                paymentMethods: processedPayments.reduce((acc, p) => {
+                    if (p.status === 'success' && p.razorpayDetails.paymentMethod) {
+                        const method = p.razorpayDetails.paymentMethod;
+                        acc[method] = (acc[method] || 0) + 1;
+                    }
+                    return acc;
+                }, {}),
+
+                // Daily payments
+                paymentsByDate: processedPayments.reduce((acc, p) => {
+                    if (p.status === 'success') {
+                        const date = p.createdAt.toISOString().split('T')[0];
+                        acc[date] = (acc[date] || 0) + p.amount;
+                    }
+                    return acc;
+                }, {}),
+
+                // Refund statistics
+                refunds: {
+                    total: processedPayments.filter(p => p.refundStatus === 'completed').length,
+                    pending: processedPayments.filter(p => ['requested', 'processing'].includes(p.refundStatus)).length,
+                    amount: processedPayments.reduce((sum, p) => sum + (p.refundStatus === 'completed' ? (p.refundAmount || 0) : 0), 0)
+                },
+
+                // Gateway fees
+                gatewayFees: processedPayments.reduce((sum, p) => {
+                    if (p.status === 'success' && p.razorpayDetails.fee) {
+                        return sum + p.razorpayDetails.fee;
+                    }
+                    return sum;
+                }, 0),
+
+                // Recent payments (last 10)
+                recentPayments: processedPayments
+                    .filter(p => p.status === 'success')
+                    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+                    .slice(0, 10)
+                    .map(p => ({
+                        id: p.paymentId,
+                        user: p.userId?.name || 'Unknown',
+                        email: p.userId?.email || 'Unknown',
+                        amount: p.amount,
+                        date: p.paymentDate || p.createdAt,
+                        method: p.razorpayDetails.paymentMethod || 'Unknown'
+                    }))
+            };
+
+            reply.send(report);
+        } catch (error) {
+            console.error('Payment report error:', error);
+            reply.code(500).send({ error: 'Internal server error' });
+        }
+    });
 
     // Get detailed payment information
     fastify.get('/payments/:paymentId', { preHandler: authenticateAdmin }, async (request, reply) => {
         try {
             const { paymentId } = request.params;
-            
+
             const payment = await Payment.findOne({ paymentId })
                 .populate('userId', 'name email phoneNumber')
                 .lean();
-                
+
             if (!payment) {
                 return reply.code(404).send({ error: 'Payment not found' });
             }
-            
+
             // Parse gateway response if available
             let gatewayData = {};
             if (payment.gatewayResponse) {
@@ -554,13 +586,13 @@ fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (reques
                     console.error('Error parsing gateway response:', e);
                 }
             }
-            
+
             const paymentDetails = {
                 ...payment,
                 gatewayData,
                 gateway: 'Razorpay'
             };
-            
+
             reply.send(paymentDetails);
         } catch (error) {
             console.error('Payment detail error:', error);
@@ -569,47 +601,47 @@ fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (reques
     });
 
     // Initiate refund for a payment
-    fastify.post('/payments/:paymentId/refund', { 
+    fastify.post('/payments/:paymentId/refund', {
         preHandler: [authenticateAdmin, checkAdminPermission('canGenerateReports')]
     }, async (request, reply) => {
         try {
             const { paymentId } = request.params;
             const { amount, reason } = request.body;
             const { userId: adminId } = request.user;
-            
+
             const payment = await Payment.findOne({ paymentId });
             if (!payment) {
                 return reply.code(404).send({ error: 'Payment not found' });
             }
-            
+
             if (payment.status !== 'success') {
                 return reply.code(400).send({ error: 'Only successful payments can be refunded' });
             }
-            
+
             if (payment.refundStatus !== 'none') {
-                return reply.code(400).send({ 
+                return reply.code(400).send({
                     error: `Refund already ${payment.refundStatus}`,
                     refundStatus: payment.refundStatus
                 });
             }
-            
+
             // Get Razorpay payment details
             const razorpayService = require('../services/razorpayService');
             const refundAmount = amount || payment.amount;
-            
+
             // Initiate refund in Razorpay
             const refund = await razorpayService.initiateRefund(
                 payment.transactionId,
                 refundAmount * 100 // Convert to paisa
             );
-            
+
             // Update payment record
             payment.refundStatus = 'processing';
             payment.refundId = refund.id;
             payment.refundAmount = refundAmount;
             payment.refundDate = new Date();
             await payment.save();
-            
+
             // Log admin activity
             const admin = await Admin.findOne({ userId: adminId });
             await admin.logActivity('payment_refund', {
@@ -618,7 +650,7 @@ fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (reques
                 reason,
                 refundId: refund.id
             });
-            
+
             // Log refund initiation
             request.log.info({
                 action: 'payment_refund_initiated',
@@ -627,7 +659,7 @@ fastify.get('/payments/report', { preHandler: authenticateAdmin }, async (reques
                 refundId: refund.id,
                 amount: refundAmount
             });
-            
+
             reply.send({
                 success: true,
                 message: 'Refund initiated successfully',
