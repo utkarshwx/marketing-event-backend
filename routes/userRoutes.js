@@ -32,6 +32,25 @@ async function userRoutes(fastify) {
         }
     });
 
+    fastify.put('/profile', { preHandler: authenticateUser }, async (request, reply) => {
+        
+        try {
+            const { userId } = request.user;
+            const { name, phoneNumber } = request.body;
+
+            const existingPhone = await User.findOne({ phoneNumber });
+
+            if (existingPhone && existingPhone.userId !== userId) {
+                return reply.code(400).send({ error: 'Phone number already exists' });
+            }
+            
+            const user = await User.findOneAndUpdate({ userId }, { name, phoneNumber }, { new: true });
+            reply.send(user);
+        } catch (error) {
+            reply.code(500).send({ error: 'Internal server error' });
+        }
+    })
+
     // Initiate payment with Razorpay
     fastify.post('/payments/initiate', { preHandler: authenticateUser }, async (request, reply) => {
         try {
