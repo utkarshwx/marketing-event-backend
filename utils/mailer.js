@@ -65,7 +65,23 @@ const sendloginMail = async (to, userName) => {
     }
 };
 
+const sendForgotPassword = async (to, username, otp, ip) => {
+
+    try {
+        await sendMail(to, 'Password Reset!!', 'passwordreset', {
+            otp,
+            username,
+            ip,
+        });
+    } catch (error) {
+
+        console.error(`Failed to send password reset email to ${to}: ${error.message}`);
+        throw error;
+    }
+}
+
 module.exports = {
     sendOtpMail,
-    sendloginMail
+    sendloginMail,
+    sendForgotPassword
 };

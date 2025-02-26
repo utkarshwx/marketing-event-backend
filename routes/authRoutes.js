@@ -4,7 +4,7 @@ const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const OTPVerification = require('../models/Otp');
 const config = require('../config/config');
-const { sendOtpMail, sendloginMail } = require('../utils/mailer');
+const { sendOtpMail, sendloginMail, sendForgotPassword } = require('../utils/mailer');
 const rateLimiters = require('../middleware/rateLimiter');
 
 async function authRoutes(fastify) {
@@ -358,7 +358,7 @@ async function authRoutes(fastify) {
                 });
 
                 await otpVerification.save();
-                await sendOtpMail(user.email, otp, user.name);
+                await sendForgotPassword(user.email, user.name, otp, request.ip);
 
                 // Log password reset request
                 request.log.info({
