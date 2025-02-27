@@ -6,6 +6,7 @@ const OTPVerification = require('../models/Otp');
 const config = require('../config/config');
 const { sendOtpMail, sendloginMail, sendForgotPassword } = require('../utils/mailer');
 const rateLimiters = require('../middleware/rateLimiter');
+const verifyOtp = require('../models/verify-otp');
 
 async function authRoutes(fastify) {
     // Register user - limit to prevent spam account creation
@@ -378,25 +379,132 @@ async function authRoutes(fastify) {
         }
     });
 
-    // Reset Password - limit to prevent brute force
+    // Fixed Password Reset Endpoints
+
+    // Step 1: Verify OTP for password reset
+    fastify.route({
+        method: 'POST',
+        url: '/verify-reset-otp',
+        preHandler: rateLimiters.otpVerification,
+        handler: async (request, reply) => {
+            try {
+                const { email, otp } = request.body;
+
+                if (!email || !otp) {
+                    return reply.code(400).send({ 
+                        error: 'Missing required fields',
+                        requiredFields: ['email', 'otp']
+                    });
+                }
+
+                // Find user by email
+                const user = await User.findOne({ email }).lean();
+                if (!user) {
+                    return reply.code(404).send({ error: 'User not found' });
+                }
+
+                // Find the most recent valid OTP for this user
+                const verification = await OTPVerification.findOne({
+                    userId: user.userId,
+                    otp,
+                    isVerified: false,
+                    expiresAt: { $gt: new Date() }
+                }).sort({ createdAt: -1 });
+                
+                if (!verification) {
+                    return reply.code(400).send({ error: 'Invalid or expired OTP' });
+                }
+
+                // Mark this OTP as verified
+                verification.isVerified = true;
+                await verification.save();
+
+                await verifyOtp.deleteMany({ Email: email });
+
+                // Generate a secure random token for the password reset link
+                let resetToken = '';
+                const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+                for (let i = 0; i < 50; i++) {
+                    resetToken += characters.charAt(Math.floor(Math.random() * characters.length));
+                }
+
+                // Save the reset token with the user's email
+                const newResetToken = new verifyOtp({
+                    Id: resetToken, 
+                    Email: email,
+                    expiresAt: new Date(Date.now() + 15 * 60000) // Token expires in 15 minutes
+                });
+                await newResetToken.save();
+
+                // Log verification success
+                request.log.info({
+                    action: 'password_reset_otp_verified',
+                    userId: user.userId,
+                    ip: request.ip
+                });
+
+                reply.send({ 
+                    message: 'OTP verified successfully. You can now reset your password.',
+                    userId: user.userId,
+                    verified: true,
+                    resetToken: resetToken
+                });
+            } catch (error) {
+                console.error("OTP verification error:", error);
+                reply.code(500).send({ error: 'Internal server error' });
+            }
+        }
+    });
+
+    // Step 2: Reset password with new password
     fastify.route({
         method: 'POST',
         url: '/reset-password',
         preHandler: rateLimiters.otpVerification,
         handler: async (request, reply) => {
             try {
-                const { userId, otp, newPassword } = request.body;
+                const { email, newPassword, resetToken } = request.body;
 
-                // Find the most recent valid OTP for this user
-                const verification = await OTPVerification.findOne({
-                    userId,
-                    otp,
-                    isVerified: false,
+                if (!email || !newPassword || !resetToken) {
+                    return reply.code(400).send({ 
+                        error: 'Missing required fields',
+                        requiredFields: ['email', 'newPassword', 'resetToken']
+                    });
+                }
+
+                // Verify the reset token is valid
+                const tokenRecord = await verifyOtp.findOne({ 
+                    Id: resetToken,
+                    Email: email,
                     expiresAt: { $gt: new Date() }
-                }).sort({ createdAt: -1 }); // Get the most recently created OTP
+                });
+                
+                if (!tokenRecord) {
+                    return reply.code(401).send({ 
+                        error: 'Invalid or expired reset token',
+                        verified: false
+                    });
+                }
 
-                if (!verification) {
-                    return reply.code(400).send({ error: 'Invalid or expired OTP' });
+                // Find user by email
+                const user = await User.findOne({ email });
+                if (!user) {
+                    return reply.code(404).send({ error: 'User not found' });
+                }
+
+                // Check if user has a verified OTP within the last 15 minutes
+                const hasVerifiedOtp = await OTPVerification.exists({
+                    userId: user.userId,
+                    isVerified: true,
+                    expiresAt: { $gt: new Date(Date.now() - 15 * 60000) }
+                });
+
+                if (!hasVerifiedOtp) {
+                    return reply.code(401).send({ 
+                        error: 'Please verify your OTP before resetting password',
+                        verified: false
+                    });
                 }
 
                 // Hash new password
@@ -404,38 +512,35 @@ async function authRoutes(fastify) {
 
                 // Update password
                 await User.findOneAndUpdate(
-                    { userId },
+                    { userId: user.userId },
                     { password: hashedPassword }
                 );
-
-                // Mark OTP as verified
-                verification.isVerified = true;
-                await verification.save();
                 
-                // Expire all other OTPs for this user
+                // Expire all OTPs for this user
                 await OTPVerification.updateMany(
-                    { 
-                        userId,
-                        _id: { $ne: verification._id }, // Exclude the one we just verified
-                        isVerified: false 
-                    },
+                    { userId: user.userId },
                     { 
                         $set: { 
-                            expiresAt: new Date()  // Expire all other OTPs
+                            expiresAt: new Date() // Expire all OTPs
                         } 
                     }
                 );
 
-                // Log successful password reset
+                // Invalidate the reset token
+                await verifyOtp.deleteOne({ Id: resetToken });
+
+                // Log successful password update
                 request.log.info({
                     action: 'password_reset_completed',
-                    userId,
+                    userId: user.userId,
                     ip: request.ip
                 });
 
-                reply.send({ message: 'Password reset successful' });
+                reply.send({ 
+                    message: 'Password reset successful. You can now login with your new password.'
+                });
             } catch (error) {
-                console.error("Reset password error:", error);
+                console.error("Password reset error:", error);
                 reply.code(500).send({ error: 'Internal server error' });
             }
         }
