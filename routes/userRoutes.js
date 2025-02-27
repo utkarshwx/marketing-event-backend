@@ -738,6 +738,8 @@ async function userRoutes(fastify) {
                 return reply.code(400).send({ error: 'No current event registration found' });
             }
 
+            const event = await Event.findOne({ eventId });
+
             // Process same as registration but with additional logging
             await userRoutes.generateRoute('POST', '/events/register').handler(request, reply);
         } catch (error) {
